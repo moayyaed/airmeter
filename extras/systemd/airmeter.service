@@ -1,0 +1,14 @@
+[Unit]
+Description=AirMeter Air Sensor Service
+
+[Service]
+EnvironmentFile=-/etc/default/airmeter
+ExecStart=/usr/local/bin/airmeter -b '$MQTT_BROKER' -l '$LOCATION' -d '$DRIVER'
+ExecReload=/bin/kill -HUP $MAINPID
+KillMode=process
+Restart=on-failure
+RestartPreventExitStatus=255
+Type=simple
+
+[Install]
+WantedBy=multi-user.target

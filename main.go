@@ -1,27 +1,28 @@
 package main
 
 import (
-	"encoding/json"
+	"context"
 	"flag"
 	"fmt"
 	"io"
 	"io/ioutil"
 	"os"
+	"sync"
 	"time"
 
 	MQTT "github.com/eclipse/paho.mqtt.golang"
+	"github.com/fishnix/airmeter/sensor"
 	uuid "github.com/satori/go.uuid"
 	log "github.com/sirupsen/logrus"
 
-	"gobot.io/x/gobot"
-	"gobot.io/x/gobot/drivers/i2c"
 	"gobot.io/x/gobot/platforms/raspi"
 )
 
 var (
-	version = "0.1.0"
+	version = "0.2.0"
 
-	vers = flag.Bool("v", false, "display version information and exit")
+	vers         = flag.Bool("v", false, "display version information and exit")
+	sensorDriver = flag.String("d", "bme280", "Which sensor driver to use: 'bme280' or 'sht3x'")
 
 	frequency  = flag.String("f", "5s", "frequency to collect data from the sensor")
 	location   = flag.String("l", "home", "location for the sensor")
@@ -40,20 +41,12 @@ var publishHandler MQTT.MessageHandler = func(client MQTT.Client, msg MQTT.Messa
 	fmt.Printf("MSG: %s\n", msg.Payload())
 }
 
-// Sensor is the driver for the sensor and the most recent (ie. Current) reading
-type Sensor struct {
-	driver  *i2c.BME280Driver
-	Current Reading
-}
-
-// Reading holds air sensor readings
-// Temperature is in C
-// Humidity is %
-// Pressure is in Pa
-type Reading struct {
-	Temperature float32
-	Humidity    float32
-	Pressure    float32
+type job struct {
+	ticker     *time.Ticker
+	waitgroup  *sync.WaitGroup
+	sensor     io.Reader
+	mqttTopic  string
+	mqttClient MQTT.Client
 }
 
 func main() {
@@ -81,97 +74,47 @@ func main() {
 	}
 
 	r := raspi.NewAdaptor()
-	sensor := &Sensor{
-		driver: i2c.NewBME280Driver(r),
-	}
-
-	log.Infoln("Outside gobot")
-	_, err = ioutil.ReadAll(sensor)
+	sensor, err := sensor.NewAirMeterReader(r, *sensorDriver)
 	if err != nil {
-		log.Fatal(err)
-	}
-	sensor.Print()
-
-	work := func() {
-		gobot.Every(freq, func() {
-			b, e := ioutil.ReadAll(sensor)
-			if e != nil {
-				log.Fatalln(err)
-			}
-			token := mqttClient.Publish(topic, 0, false, string(b))
-			token.Wait()
-		})
+		log.Fatalf("Couldn't configure sensor! %s", err)
 	}
 
-	robot := gobot.NewRobot("airBot",
-		[]gobot.Connection{r},
-		[]gobot.Device{sensor.driver},
-		work,
-	)
+	// Setup context to allow goroutines to be cancelled
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
-	err = robot.Start()
-	if err != nil {
-		log.Fatalln("Error starting robot!")
-	}
+	var wg sync.WaitGroup
+	wg.Add(1)
+	Start(ctx, job{
+		ticker:     time.NewTicker(freq),
+		waitgroup:  &wg,
+		sensor:     sensor,
+		mqttTopic:  topic,
+		mqttClient: mqttClient,
+	})
+	wg.Wait()
 
 	mqttClient.Disconnect(1)
 }
 
-// Read gets the data from the sensor.  It implements io.Reader by filling the []byte with
-// the Reading struct encoded as JSON.  Every successful call returns io.EOF.
-func (s *Sensor) Read(p []byte) (int, error) {
-	s.driver.Start()
-
-	// read the humidity from the sensor
-	hum, err := s.driver.Humidity()
-	if err != nil {
-		return 0, err
-	}
-
-	// read the temperature from the sensor
-	tem, err := s.driver.Temperature()
-	if err != nil {
-		return 0, err
-	}
-
-	// read the pressure from the sensor
-	prs, err := s.driver.Pressure()
-	if err != nil {
-		return 0, err
-	}
-
-	// not exactly sure how to set the constant for sea level pressure and don't want to
-	// copy-pasta the calculation here since my altitude wont change so its not very useful
-	// i2c.bmp280SeaLevelPressure = 103400.00
-	// alt, err := s.driver.Altitude()
-	// if err != nil {
-	// 	return err
-	// }
-
-	s.Current = Reading{
-		Temperature: tem,
-		Humidity:    hum,
-		Pressure:    prs,
-	}
-
-	j, err := json.Marshal(s.Current)
-	if err != nil {
-		return 0, err
-	}
-
-	// fill the slice of bytes from the values marshaled to JSON
-	for i, b := range j {
-		p[i] = b
-	}
-
-	return len(j), io.EOF
-}
-
-// Print displays the current sensor data
-func (sensor *Sensor) Print() {
-	fmt.Printf("Temp: %fC\n", sensor.Current.Temperature)
-	fmt.Printf("Humidity: %f\n", sensor.Current.Humidity)
-	fmt.Printf("Pressure: %fPa\n\n", sensor.Current.Pressure)
+func Start(ctx context.Context, j job) {
+	go func() {
+		defer j.waitgroup.Done()
+		for {
+			select {
+			case <-j.ticker.C:
+				b, e := ioutil.ReadAll(j.sensor)
+				if e != nil {
+					log.Fatalln(e)
+				}
+				token := j.mqttClient.Publish(j.mqttTopic, 0, false, string(b))
+				token.Wait()
+			case <-ctx.Done():
+				log.Info("Shutdown...")
+				return
+			}
+		}
+	}()
 }
 
 // newMQTTClient returns a new MQTT client with a random client ID and the broker endpoint set
