@@ -26,6 +26,7 @@ I can't say for sure, but I decided to implement the sensors as io.Reader where 
 # Hardware
 
 The supported/tested sensors are:
+* Dummy (returns a random temperature, humidity, and pressure)
 * [Adafruit BME280 sensors](https://www.adafruit.com/product/2652)
 * [Adafruit SHT31-D sensors](https://www.adafruit.com/product/2857)
 
