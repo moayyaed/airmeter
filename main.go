@@ -13,7 +13,6 @@ import (
 
 	MQTT "github.com/eclipse/paho.mqtt.golang"
 	"github.com/fishnix/airmeter/sensor"
-	"github.com/gobuffalo/packr"
 	"github.com/gorilla/handlers"
 	"github.com/gorilla/mux"
 	uuid "github.com/satori/go.uuid"
@@ -160,17 +159,10 @@ func Start(ctx context.Context, cancel context.CancelFunc, j job) chan []byte {
 
 // StartHTTP starts the HTTP subsystem
 func StartHTTP(ctx context.Context, cmdChan chan *CommandRequest, respChan chan []byte) {
-	// set up a new box by giving it a (relative) path to a folder on disk:
-	box := packr.NewBox("./static")
-	indexHTML, err := box.MustBytes("index.html")
-	if err != nil {
-		log.Fatal("Couldn't read static file for build")
-	}
-
 	r := mux.NewRouter()
 	r.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write(indexHTML)
+		w.Write([]byte(IndexHTML))
 	})
 
 	api := r.PathPrefix("/api").Subrouter()
