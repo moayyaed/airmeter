@@ -1,7 +1,6 @@
 package sensor
 
 import (
-	"encoding/json"
 	"fmt"
 	"io"
 
@@ -25,105 +24,9 @@ func NewAirMeterReader(adapter i2c.Connector, driver string) (io.Reader, error) 
 		return NewBME280Sensor(adapter), nil
 	case "sht3x":
 		return NewSHT3xSensor(adapter), nil
+	case "dummy":
+		return NewDummySensor(nil), nil
 	default:
 		return nil, fmt.Errorf("Invalid driver '%s' or adapter", driver)
 	}
-}
-
-// BME280Sensor is a wrapper for the BME280 sensor drivers
-type BME280Sensor struct {
-	Driver  *i2c.BME280Driver
-	Current Reading
-}
-
-// NewBME280Sensor returns a BME280Sensor
-func NewBME280Sensor(adapter i2c.Connector) BME280Sensor {
-	return BME280Sensor{Driver: i2c.NewBME280Driver(adapter)}
-}
-
-// Read gets the data from the sensor.  It implements io.Reader by filling the []byte with
-// the Reading struct encoded as JSON.  Every successful call returns io.EOF.
-func (sensor BME280Sensor) Read(p []byte) (int, error) {
-	sensor.Driver.Start()
-
-	// read the humidity from the sensor
-	hum, err := sensor.Driver.Humidity()
-	if err != nil {
-		return 0, err
-	}
-
-	// read the temperature from the sensor
-	tem, err := sensor.Driver.Temperature()
-	if err != nil {
-		return 0, err
-	}
-
-	// read the pressure from the sensor
-	prs, err := sensor.Driver.Pressure()
-	if err != nil {
-		return 0, err
-	}
-
-	// not exactly sure how to set the constant for sea level pressure and don't want to
-	// copy-pasta the calculation here since my altitude wont change so its not very useful
-	// i2c.bmp280SeaLevelPressure = 103400.00
-	// alt, err := s.Driver.Altitude()
-	// if err != nil {
-	// 	return err
-	// }
-
-	sensor.Current = Reading{
-		Temperature: tem,
-		Humidity:    hum,
-		Pressure:    prs,
-	}
-
-	j, err := json.Marshal(sensor.Current)
-	if err != nil {
-		return 0, err
-	}
-
-	// fill the slice of bytes from the values marshaled to JSON
-	for i, b := range j {
-		p[i] = b
-	}
-
-	return len(j), io.EOF
-}
-
-// SHT3xSensor is a wrapper for the SHT3x sensor drivers
-type SHT3xSensor struct {
-	Driver  *i2c.SHT3xDriver
-	Current Reading
-}
-
-// NewSHT3xSensor returns a SHT3xSensor
-func NewSHT3xSensor(adapter i2c.Connector) SHT3xSensor {
-	return SHT3xSensor{Driver: i2c.NewSHT3xDriver(adapter)}
-}
-
-func (sensor SHT3xSensor) Read(p []byte) (int, error) {
-	sensor.Driver.Start()
-
-	tem, hum, err := sensor.Driver.Sample()
-	if err != nil {
-		return 0, err
-	}
-
-	sensor.Current = Reading{
-		Temperature: tem,
-		Humidity:    hum,
-	}
-
-	j, err := json.Marshal(sensor.Current)
-	if err != nil {
-		return 0, err
-	}
-
-	// fill the slice of bytes from the values marshaled to JSON
-	for i, b := range j {
-		p[i] = b
-	}
-
-	return len(j), io.EOF
 }
