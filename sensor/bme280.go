@@ -9,13 +9,14 @@ import (
 
 // BME280Sensor is a wrapper for the BME280 sensor drivers
 type BME280Sensor struct {
-	Driver  *i2c.BME280Driver
-	Current Reading
+	Driver                               *i2c.BME280Driver
+	Current                              Reading
+	tempFactor, humidFactor, pressFactor float32
 }
 
 // NewBME280Sensor returns a BME280Sensor
-func NewBME280Sensor(adapter i2c.Connector) BME280Sensor {
-	return BME280Sensor{Driver: i2c.NewBME280Driver(adapter)}
+func NewBME280Sensor(adapter i2c.Connector, tf, hf, pf float32) BME280Sensor {
+	return BME280Sensor{Driver: i2c.NewBME280Driver(adapter), tempFactor: tf, humidFactor: hf, pressFactor: pf}
 }
 
 // Read gets the data from the sensor.  It implements io.Reader by filling the []byte with
@@ -50,9 +51,9 @@ func (sensor BME280Sensor) Read(p []byte) (int, error) {
 	// }
 
 	sensor.Current = Reading{
-		Temperature: tem,
-		Humidity:    hum,
-		Pressure:    prs,
+		Temperature: tem + sensor.tempFactor,
+		Humidity:    hum + sensor.humidFactor,
+		Pressure:    prs + sensor.pressFactor,
 	}
 
 	j, err := json.Marshal(sensor.Current)

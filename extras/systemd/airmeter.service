@@ -3,7 +3,7 @@ Description=AirMeter Air Sensor Service
 
 [Service]
 EnvironmentFile=-/etc/default/airmeter
-ExecStart=/usr/local/bin/airmeter -b '$MQTT_BROKER' -l '$LOCATION' -d '$DRIVER'
+ExecStart=/usr/local/bin/airmeter -b '$MQTT_BROKER' -l '$LOCATION' -d '$DRIVER' -e '$TEMP_FACTOR' -u '$HUMID_FACTOR' -r '$PRESS_FACTOR'
 ExecReload=/bin/kill -HUP $MAINPID
 KillMode=process
 Restart=on-failure

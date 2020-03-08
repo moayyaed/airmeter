@@ -9,13 +9,14 @@ import (
 
 // SHT3xSensor is a wrapper for the SHT3x sensor drivers
 type SHT3xSensor struct {
-	Driver  *i2c.SHT3xDriver
-	Current Reading
+	Driver                  *i2c.SHT3xDriver
+	Current                 Reading
+	tempFactor, humidFactor float32
 }
 
 // NewSHT3xSensor returns a SHT3xSensor
-func NewSHT3xSensor(adapter i2c.Connector) SHT3xSensor {
-	return SHT3xSensor{Driver: i2c.NewSHT3xDriver(adapter)}
+func NewSHT3xSensor(adapter i2c.Connector, tf, hf, pf float32) SHT3xSensor {
+	return SHT3xSensor{Driver: i2c.NewSHT3xDriver(adapter), tempFactor: tf, humidFactor: hf}
 }
 
 func (sensor SHT3xSensor) Read(p []byte) (int, error) {
@@ -27,8 +28,8 @@ func (sensor SHT3xSensor) Read(p []byte) (int, error) {
 	}
 
 	sensor.Current = Reading{
-		Temperature: tem,
-		Humidity:    hum,
+		Temperature: tem + sensor.tempFactor,
+		Humidity:    hum + sensor.humidFactor,
 	}
 
 	j, err := json.Marshal(sensor.Current)

@@ -18,14 +18,14 @@ type Reading struct {
 }
 
 // NewAirMeter returns the proper i2c airmeter driver
-func NewAirMeterReader(adapter i2c.Connector, driver string) (io.Reader, error) {
+func NewAirMeterReader(adapter i2c.Connector, driver string, tf, hf, pf float32) (io.Reader, error) {
 	switch driver {
 	case "bme280":
-		return NewBME280Sensor(adapter), nil
+		return NewBME280Sensor(adapter, tf, hf, pf), nil
 	case "sht3x":
-		return NewSHT3xSensor(adapter), nil
+		return NewSHT3xSensor(adapter, tf, hf, pf), nil
 	case "dummy":
-		return NewDummySensor(nil), nil
+		return NewDummySensor(nil, tf, hf, pf), nil
 	default:
 		return nil, fmt.Errorf("Invalid driver '%s' or adapter", driver)
 	}
