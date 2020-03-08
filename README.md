@@ -90,3 +90,7 @@ All backend components are simple docker containers running on a single 5 year o
 ## InfluxDB
 
 [influxdb](https://hub.docker.com/_/influxdb)
+
+## Grafana
+
+[grafana](https://grafana.com/docs/grafana/latest/installation/docker/)
