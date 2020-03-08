@@ -10,19 +10,20 @@ import (
 
 // DummySensor is a "wrapper" for a dummy sensor drivers
 type DummySensor struct {
-	Current Reading
+	Current                              Reading
+	tempFactor, humidFactor, pressFactor float32
 }
 
 // NewDummySensor returns a DummySensor
-func NewDummySensor(_ i2c.Connector) DummySensor {
-	return DummySensor{}
+func NewDummySensor(_ i2c.Connector, tf, hf, pf float32) DummySensor {
+	return DummySensor{tempFactor: tf, humidFactor: hf, pressFactor: pf}
 }
 
 func (sensor DummySensor) Read(p []byte) (int, error) {
 	sensor.Current = Reading{
-		Temperature: rand.Float32() * 100,
-		Humidity:    rand.Float32() * 100,
-		Pressure:    rand.Float32() * 100,
+		Temperature: (rand.Float32() * 100) + sensor.tempFactor,
+		Humidity:    (rand.Float32() * 100) + sensor.humidFactor,
+		Pressure:    (rand.Float32() * 100) + sensor.pressFactor,
 	}
 
 	j, err := json.Marshal(sensor.Current)

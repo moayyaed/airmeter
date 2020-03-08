@@ -8,6 +8,7 @@ import (
 	"io/ioutil"
 	"net/http"
 	"os"
+	"strconv"
 	"sync"
 	"time"
 
@@ -22,10 +23,13 @@ import (
 )
 
 var (
-	version = "0.2.0"
+	version = "0.4.0"
 
-	vers         = flag.Bool("v", false, "display version information and exit")
+	vers         = flag.Bool("V", false, "display version information and exit")
 	sensorDriver = flag.String("d", "bme280", "Which sensor driver to use: 'dummy', 'bme280' or 'sht3x'")
+	tempFactor   = flag.String("e", "0", "Static correction factor for the temperature.  ie. '5', '-3', '1.2")
+	humidFactor  = flag.String("u", "0", "Static correction factor for the humidity.  ie. '5', '-3', '1.2'")
+	pressFactor  = flag.String("r", "0", "Static correction factor for the pressure.  ie. '5', '-3', '1.2")
 
 	frequency  = flag.String("f", "5s", "frequency to collect data from the sensor")
 	location   = flag.String("l", "home", "location for the sensor")
@@ -36,6 +40,8 @@ var (
 	// Advanced options
 	topicroot       = flag.String("t", "airmeter", "Advanced: Set the MQTT topic root - the topic will be 'topicroot/location' - ")
 	startSubscriber = flag.Bool("s", false, "Advanced: start a subscription on the MQTT topic and print to STDOUT")
+
+	verbose = flag.Bool("v", false, "enable verbose output")
 )
 
 // publishHandler is a simple "print to STDOUT" handler for the MQTT topic subscription
@@ -69,14 +75,42 @@ func main() {
 		os.Exit(0)
 	}
 
+	log.SetLevel(log.InfoLevel)
+	if *verbose {
+		log.SetLevel(log.DebugLevel)
+		log.Debug("Starting profiler on 127.0.0.1:6080")
+		go http.ListenAndServe("127.0.0.1:6080", nil)
+	}
+
 	freq, err := time.ParseDuration(*frequency)
 	if err != nil {
-		log.Fatalf("Cannot parse frequency duration: %s", *frequency)
+		log.Fatalf("Cannot parse frequency duration '%s': %s", *frequency, err)
 	}
 
 	topic := fmt.Sprintf("%s/%s", *topicroot, *location)
 
-	mqttClient := newMQTTClient()
+	tf, err := parseFactor(*tempFactor)
+	if err != nil {
+		log.Fatalf("Cannot parse temperature factor as float '%s': %s", *tempFactor, err)
+	}
+	log.Infof("set temperature factor to %f", tf)
+
+	hf, err := parseFactor(*humidFactor)
+	if err != nil {
+		log.Fatalf("Cannot parse temperature factor as float '%s': %s", *humidFactor, err)
+	}
+	log.Infof("set humidity factor to %f", hf)
+
+	pf, err := parseFactor(*pressFactor)
+	if err != nil {
+		log.Fatalf("Cannot parse temperature factor as float '%s': %s", *pressFactor, err)
+	}
+	log.Infof("set pressure factor to %f", pf)
+
+	mqttClient, err := newMQTTClient(*mqttBroker)
+	if err != nil {
+		log.Fatalf("Failed to setup MQTT client: %s", err)
+	}
 
 	if *startSubscriber {
 		// if startSubscriber flag is passed, start a goroutine to subscribe to the MQTT topic
@@ -86,7 +120,7 @@ func main() {
 	}
 
 	r := raspi.NewAdaptor()
-	sensor, err := sensor.NewAirMeterReader(r, *sensorDriver)
+	sensor, err := sensor.NewAirMeterReader(r, *sensorDriver, tf, hf, pf)
 	if err != nil {
 		log.Fatalf("Couldn't configure sensor! %s", err)
 	}
@@ -220,12 +254,12 @@ func StartHTTP(ctx context.Context, cmdChan chan *CommandRequest, respChan chan 
 	}()
 }
 
-// newMQTTClient returns a new MQTT client with a random client ID and the broker endpoint set
-// by the flag for mqttBroker
-func newMQTTClient() MQTT.Client {
+// newMQTTClient returns a new MQTT client with a random client ID and the broker endpoint
+func newMQTTClient(broker string) (MQTT.Client, error) {
 	clientID := uuid.NewV4()
-	opts := MQTT.NewClientOptions().AddBroker(*mqttBroker)
-	log.Infof("Setting MQTT broker: %s", *mqttBroker)
+
+	opts := MQTT.NewClientOptions().AddBroker(broker)
+	log.Infof("Setting MQTT broker: %s", broker)
 
 	opts.SetClientID(clientID.String())
 	log.Infof("Setting MQTT client ID: %s", clientID.String())
@@ -235,10 +269,10 @@ func newMQTTClient() MQTT.Client {
 	// create and start a client using the above ClientOptions
 	c := MQTT.NewClient(opts)
 	if token := c.Connect(); token.Wait() && token.Error() != nil {
-		panic(token.Error())
+		return nil, token.Error()
 	}
 
-	return c
+	return c, nil
 }
 
 // subscribe subscribes to the MQTT topic defined at startup and handles messages with the default handler
@@ -247,4 +281,15 @@ func subscribe(mqttClient MQTT.Client, topic string) {
 		log.Errorln(token.Error())
 		os.Exit(1)
 	}
+}
+
+func parseFactor(f string) (float32, error) {
+	log.Debugf("parsing correction factor %s", f)
+	factor, err := strconv.ParseFloat(f, 32)
+	if err != nil {
+		return float32(0), err
+	}
+
+	log.Debugf("parsed correction factor %f", factor)
+	return float32(factor), nil
 }
