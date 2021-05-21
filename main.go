@@ -8,9 +8,12 @@ import (
 	"io/ioutil"
 	"net/http"
 	"os"
+	"os/signal"
 	"strconv"
 	"sync"
 	"time"
+
+	_ "embed"
 
 	MQTT "github.com/eclipse/paho.mqtt.golang"
 	"github.com/fishnix/airmeter/sensor"
@@ -25,15 +28,22 @@ import (
 var (
 	version = "0.4.0"
 
+	//go:embed static/index.html
+	IndexHTML string
+
 	vers         = flag.Bool("V", false, "display version information and exit")
 	sensorDriver = flag.String("d", "bme280", "Which sensor driver to use: 'dummy', 'bme280' or 'sht3x'")
+	tempUnits    = flag.String("U", "C", "units (F, C)")
 	tempFactor   = flag.String("e", "0", "Static correction factor for the temperature.  ie. '5', '-3', '1.2")
 	humidFactor  = flag.String("u", "0", "Static correction factor for the humidity.  ie. '5', '-3', '1.2'")
 	pressFactor  = flag.String("r", "0", "Static correction factor for the pressure.  ie. '5', '-3', '1.2")
 
-	frequency  = flag.String("f", "5s", "frequency to collect data from the sensor")
-	location   = flag.String("l", "home", "location for the sensor")
-	mqttBroker = flag.String("b", "tcp://iot.eclipse.org:1883", "MQTT broker endpoint")
+	frequency   = flag.String("f", "5s", "frequency to collect data from the sensor")
+	location    = flag.String("l", "home", "location for the sensor")
+	mqttBroker  = flag.String("b", "tcp://iot.eclipse.org:1883", "MQTT broker endpoint")
+	mqttEnabled = flag.Bool("m", false, "enable mqtt")
+
+	logLevel = flag.String("L", "info", "set the log level (debug, info, warn, error)")
 
 	httpAddress = flag.String("a", ":8000", "HTTP listen address")
 
@@ -75,7 +85,19 @@ func main() {
 		os.Exit(0)
 	}
 
-	log.SetLevel(log.InfoLevel)
+	switch *logLevel {
+	case "error":
+		log.SetLevel(log.ErrorLevel)
+	case "warn":
+		log.SetLevel(log.WarnLevel)
+	case "info":
+		log.SetLevel(log.InfoLevel)
+	case "debug":
+		log.SetLevel(log.DebugLevel)
+	default:
+		log.SetLevel(log.InfoLevel)
+	}
+
 	if *verbose {
 		log.SetLevel(log.DebugLevel)
 		log.Debug("Starting profiler on 127.0.0.1:6080")
@@ -107,29 +129,33 @@ func main() {
 	}
 	log.Infof("set pressure factor to %f", pf)
 
-	mqttClient, err := newMQTTClient(*mqttBroker)
-	if err != nil {
-		log.Fatalf("Failed to setup MQTT client: %s", err)
-	}
-
-	if *startSubscriber {
-		// if startSubscriber flag is passed, start a goroutine to subscribe to the MQTT topic
-		// this is primarily added for debugging and not expected to be used most of the time.
-		log.Println("Starting MQTT subscription on topic:", topic)
-		go subscribe(mqttClient, topic)
-	}
-
-	r := raspi.NewAdaptor()
-	sensor, err := sensor.NewAirMeterReader(r, *sensorDriver, tf, hf, pf)
-	if err != nil {
-		log.Fatalf("Couldn't configure sensor! %s", err)
-	}
+	var wg sync.WaitGroup
 
 	// Setup context to allow goroutines to be cancelled
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	var wg sync.WaitGroup
+	var mqttClient MQTT.Client
+	if *mqttEnabled {
+		mqttClient, err = newMQTTClient(ctx, &wg, *mqttBroker)
+		if err != nil {
+			log.Fatalf("Failed to setup MQTT client: %s", err)
+		}
+
+		if *startSubscriber {
+			// if startSubscriber flag is passed, start a goroutine to subscribe to the MQTT topic
+			// this is primarily added for debugging and not expected to be used most of the time.
+			log.Println("Starting MQTT subscription on topic:", topic)
+			go subscribe(mqttClient, topic)
+		}
+	}
+
+	r := raspi.NewAdaptor()
+	sensor, err := sensor.NewAirMeterReader(r, *sensorDriver, *tempUnits, tf, hf, pf)
+	if err != nil {
+		log.Fatalf("Couldn't configure sensor! %s", err)
+	}
+
 	cmdChan := make(chan *CommandRequest)
 	wg.Add(1)
 	respChan := Start(ctx, cancel, job{
@@ -142,10 +168,22 @@ func main() {
 	})
 
 	StartHTTP(ctx, cmdChan, respChan)
+
+	// catch os interrupts and shutdown
+	go func() {
+		c := make(chan os.Signal, 1)
+		signal.Notify(c, os.Interrupt)
+		<-c
+		cancel()
+	}()
+
 	log.Info("Waiting for threads to exit")
+
 	wg.Wait()
 
-	mqttClient.Disconnect(1)
+	if err := sensor.CleanUp(); err != nil {
+		log.Warnf("error running cleanup on sensor: %s", err)
+	}
 }
 
 // Start begins reading the sensor data and writing it to MQTT
@@ -160,7 +198,12 @@ func Start(ctx context.Context, cancel context.CancelFunc, j job) chan []byte {
 				b, e := ioutil.ReadAll(j.sensor)
 				if e != nil {
 					log.Errorf("%s", e)
-				} else {
+					continue
+				}
+
+				log.Infof("Sensor reading: %s", string(b))
+
+				if j.mqttClient != nil {
 					token := j.mqttClient.Publish(j.mqttTopic, 0, false, string(b))
 					token.Wait()
 				}
@@ -176,9 +219,9 @@ func Start(ctx context.Context, cancel context.CancelFunc, j job) chan []byte {
 					b, e := ioutil.ReadAll(j.sensor)
 					if e != nil {
 						log.Errorf("%s", e)
-					} else {
-						responseChannel <- b
+						continue
 					}
+					responseChannel <- b
 				default:
 					log.Errorf("Got unrecognized command on command request channel: %s", cmd.name)
 				}
@@ -255,7 +298,7 @@ func StartHTTP(ctx context.Context, cmdChan chan *CommandRequest, respChan chan 
 }
 
 // newMQTTClient returns a new MQTT client with a random client ID and the broker endpoint
-func newMQTTClient(broker string) (MQTT.Client, error) {
+func newMQTTClient(ctx context.Context, wg *sync.WaitGroup, broker string) (MQTT.Client, error) {
 	clientID := uuid.NewV4()
 
 	opts := MQTT.NewClientOptions().AddBroker(broker)
@@ -271,6 +314,13 @@ func newMQTTClient(broker string) (MQTT.Client, error) {
 	if token := c.Connect(); token.Wait() && token.Error() != nil {
 		return nil, token.Error()
 	}
+
+	go func() {
+		<-ctx.Done()
+		log.Warn("disconnecting MQTT client")
+		c.Disconnect(1)
+		wg.Done()
+	}()
 
 	return c, nil
 }
