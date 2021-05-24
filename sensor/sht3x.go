@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"io"
 
+	log "github.com/sirupsen/logrus"
 	"gobot.io/x/gobot/drivers/i2c"
 )
 
@@ -15,17 +16,27 @@ type SHT3xSensor struct {
 }
 
 // NewSHT3xSensor returns a SHT3xSensor
-func NewSHT3xSensor(adapter i2c.Connector, tf, hf, pf float32) SHT3xSensor {
-	return SHT3xSensor{Driver: i2c.NewSHT3xDriver(adapter), tempFactor: tf, humidFactor: hf}
+func NewSHT3xSensor(adapter i2c.Connector, units string, tf, hf, pf float32) SHT3xSensor {
+	s := i2c.NewSHT3xDriver(adapter)
+	s.Units = units
+
+	return SHT3xSensor{Driver: s, tempFactor: tf, humidFactor: hf}
 }
 
 func (sensor SHT3xSensor) Read(p []byte) (int, error) {
-	sensor.Driver.Start()
+	if err := sensor.Driver.Start(); err != nil {
+		return 0, err
+	}
+
+	if err := sensor.Driver.SetAccuracy(i2c.SHT3xAccuracyHigh); err != nil {
+		return 0, err
+	}
 
 	tem, hum, err := sensor.Driver.Sample()
 	if err != nil {
 		return 0, err
 	}
+	log.Debugf("uncorrected temperature: %f, uncorrected humidity: %f", tem, hum)
 
 	sensor.Current = Reading{
 		Temperature: tem + sensor.tempFactor,
@@ -37,10 +48,12 @@ func (sensor SHT3xSensor) Read(p []byte) (int, error) {
 		return 0, err
 	}
 
-	// fill the slice of bytes from the values marshaled to JSON
-	for i, b := range j {
-		p[i] = b
-	}
+	copy(p, j)
 
 	return len(j), io.EOF
+}
+
+func (s SHT3xSensor) CleanUp() error {
+	log.Debug("cleaning up")
+	return nil
 }

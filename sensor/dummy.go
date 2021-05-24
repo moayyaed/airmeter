@@ -5,6 +5,7 @@ import (
 	"io"
 	"math/rand"
 
+	log "github.com/sirupsen/logrus"
 	"gobot.io/x/gobot/drivers/i2c"
 )
 
@@ -20,10 +21,16 @@ func NewDummySensor(_ i2c.Connector, tf, hf, pf float32) DummySensor {
 }
 
 func (sensor DummySensor) Read(p []byte) (int, error) {
+	tem, hum, prs, err := sensor.Sample()
+	if err != nil {
+		return 0, err
+	}
+	log.Debugf("uncorrected temperature: %f, uncorrected humidity: %f, uncorrected pressure: %f", tem, hum, prs)
+
 	sensor.Current = Reading{
-		Temperature: (rand.Float32() * 100) + sensor.tempFactor,
-		Humidity:    (rand.Float32() * 100) + sensor.humidFactor,
-		Pressure:    (rand.Float32() * 100) + sensor.pressFactor,
+		Temperature: tem + sensor.tempFactor,
+		Humidity:    hum + sensor.humidFactor,
+		Pressure:    prs + sensor.pressFactor,
 	}
 
 	j, err := json.Marshal(sensor.Current)
@@ -37,4 +44,13 @@ func (sensor DummySensor) Read(p []byte) (int, error) {
 	}
 
 	return len(j), io.EOF
+}
+
+func (sensor DummySensor) Sample() (float32, float32, float32, error) {
+	return rand.Float32() * 100, rand.Float32() * 100, rand.Float32() * 100, nil
+}
+
+func (s DummySensor) CleanUp() error {
+	log.Debug("cleaning up")
+	return nil
 }
