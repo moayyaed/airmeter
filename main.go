@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
+	"math/rand"
 	"net/http"
 	"os"
 	"os/signal"
@@ -17,16 +18,19 @@ import (
 
 	MQTT "github.com/eclipse/paho.mqtt.golang"
 	"github.com/fishnix/airmeter/sensor"
+	"github.com/google/uuid"
 	"github.com/gorilla/handlers"
 	"github.com/gorilla/mux"
-	uuid "github.com/satori/go.uuid"
 	log "github.com/sirupsen/logrus"
 
 	"gobot.io/x/gobot/platforms/raspi"
 )
 
 var (
-	version = "0.4.0"
+	version = "unknown"
+	commit  = "unknown"
+	date    = "unknown"
+	builtBy = "unknown"
 
 	//go:embed static/index.html
 	IndexHTML string
@@ -81,7 +85,7 @@ func main() {
 	flag.Parse()
 
 	if *vers {
-		fmt.Println("Airmeter version:", version)
+		fmt.Printf("Airmeter version %s (%s %s - %s)\n", version, commit, date, builtBy)
 		os.Exit(0)
 	}
 
@@ -137,6 +141,8 @@ func main() {
 
 	var mqttClient MQTT.Client
 	if *mqttEnabled {
+		log.Infof("Starting MQTT integration...")
+
 		mqttClient, err = newMQTTClient(ctx, &wg, *mqttBroker)
 		if err != nil {
 			log.Fatalf("Failed to setup MQTT client: %s", err)
@@ -145,7 +151,7 @@ func main() {
 		if *startSubscriber {
 			// if startSubscriber flag is passed, start a goroutine to subscribe to the MQTT topic
 			// this is primarily added for debugging and not expected to be used most of the time.
-			log.Println("Starting MQTT subscription on topic:", topic)
+			log.Infof("Starting MQTT subscription on topic: %s", topic)
 			go subscribe(mqttClient, topic)
 		}
 	}
@@ -299,7 +305,7 @@ func StartHTTP(ctx context.Context, cmdChan chan *CommandRequest, respChan chan 
 
 // newMQTTClient returns a new MQTT client with a random client ID and the broker endpoint
 func newMQTTClient(ctx context.Context, wg *sync.WaitGroup, broker string) (MQTT.Client, error) {
-	clientID := uuid.NewV4()
+	clientID := uuid.New()
 
 	opts := MQTT.NewClientOptions().AddBroker(broker)
 	log.Infof("Setting MQTT broker: %s", broker)
@@ -309,10 +315,21 @@ func newMQTTClient(ctx context.Context, wg *sync.WaitGroup, broker string) (MQTT
 
 	opts.SetDefaultPublishHandler(publishHandler)
 
-	// create and start a client using the above ClientOptions
 	c := MQTT.NewClient(opts)
-	if token := c.Connect(); token.Wait() && token.Error() != nil {
-		return nil, token.Error()
+
+	if err := retry(3, 30*time.Second, func() error {
+		log.Infof("attemting to connect MQTT client...")
+
+		t := c.Connect()
+		if t.Wait() && t.Error() != nil {
+			return t.Error()
+		}
+
+		log.Infof("successfully connected MQTT client!")
+
+		return nil
+	}); err != nil {
+		return nil, err
 	}
 
 	go func() {
@@ -323,6 +340,32 @@ func newMQTTClient(ctx context.Context, wg *sync.WaitGroup, broker string) (MQTT
 	}()
 
 	return c, nil
+}
+
+type stop struct {
+	error
+}
+
+// retry is stolen from https://upgear.io/blog/simple-golang-retry-function/
+func retry(attempts int, sleep time.Duration, f func() error) error {
+	if err := f(); err != nil {
+		if s, ok := err.(stop); ok {
+			// Return the original error for later checking
+			return s.error
+		}
+
+		if attempts--; attempts > 0 {
+			// Add some randomness to prevent creating a Thundering Herd
+			jitter := time.Duration(rand.Int63n(int64(sleep)))
+			sleep = sleep + jitter/2
+
+			time.Sleep(sleep)
+			return retry(attempts, 2*sleep, f)
+		}
+		return err
+	}
+
+	return nil
 }
 
 // subscribe subscribes to the MQTT topic defined at startup and handles messages with the default handler
