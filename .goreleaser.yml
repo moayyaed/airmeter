@@ -12,8 +12,7 @@ archives:
   -
     wrap_in_directory: true
     files:
-      - src: extras/**/*
-        dst: extras
+      - extras/**/*
 release:
   prerelease: auto
   name_template: "{{.ProjectName}}-v{{.Version}}"
